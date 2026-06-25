@@ -1,0 +1,21 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "compilerPath": "D:/Dev-Cpp/bin/gcc.exe",
+            "intelliSenseMode": "windows-gcc-x86",
+            "cStandard": "c99",
+            "includePath": [
+                "D:/Dev-Cpp/include/**",
+                "D:/Dev-Cpp/lib/gcc/mingw32/3.4.2/include/**",
+                "${workspaceFolder}/**"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE"
+            ]
+        }
+    ],
+    "version": 4
+}
