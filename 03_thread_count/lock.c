@@ -7,6 +7,19 @@
 pthread_mutex_t mutex;
 pthread_spinlock_t spinlock;
 
+int inc(int *value, int add){
+    int old;
+
+    __asm__ volatile(
+        "lock; xaddl %2, %1;"
+        : "=a" (old)
+        : "m" (*value), "a" (add)
+        : "cc", "memory"
+    )
+    return old;
+}
+
+
 void *thread_callback(void *arg) {
 
     int *pcount = (int *)arg;
@@ -24,12 +37,16 @@ void *thread_callback(void *arg) {
         pthread_mutex_lock(&mutex);
         (*pcount)++;
         pthread_mutex_unlock(&mutex);
-#else
+#elif 0
         pthread_spin_lock(&spinlock);
         (*pcount)++;
         pthread_spin_unlock(&spinlock);
 
+#else
+        inc(pcount, 1);
+
 #endif
+        // 把(*pcount)++这条指令，通过一个函数实现
         usleep(1);
     }
 }
