@@ -1,47 +1,130 @@
+#include <stdio.h>
+
+#define LIST_INSERT(item, list) do{ \
+    item->previous = NULL; \
+    item->next = list; \
+    list = item; \
+}while(0)
+
+// 定义宏LIST_REMOVE，用于从链表中删除一个联系人
+// item表示要删除的联系人，list表示链表的头指针
+#define LIST_REMOVE(item, list) do{ \
+    if(item->previous) { item->previous->next = item->next; } \
+    if(item->next) { item->next->previous = item->previous; } \
+    if(list == item) { list = item->next; } \
+    item->previous = item->next = NULL; \
+}while(0)
 
 
+// 定义线程池
 
-
+    // 定义任务节点：代表一个待执行的任务
 struct nTask
 {
     // 每一个人到营业厅的任务不一样，定义执行的任务
-    void (*task_func)(void *arg);
+    void (*task_func)(void *arg);   // 要执行的函数指针
     // 每一个任务都有相应的参数
-    void *user_data;
-
-    // 定义一个链表的方式
-    struct nTask *prev;
-    struct nTask *next;
+    void *user_data;                // 函数的参数
+    struct nTask *prev;              // 链表前驱
+    struct nTask *next;             // 链表后继
 };
 
-
+    // 工作者节点： 代表一个工作线程
 struct nWorker {
-    pthread_t threadid;
-    struct nWorker *prev;
-    struct nWorker *next;
+    pthread_t threadid;     // 线程ID
+    // 通过nWorker操作nManager，需要有nManager对象
+    struct nManager *manager;   // 所属线程池
+    struct nWorker *prev;   // 链表前驱
+    struct nWorker *next;   // 链表后继
 };
-
+    // 线程池管理器：统一管理所有任务和线程
 typedef struct nManager {
-    struct nTask *tasks;
-    struct nWorker *workers;
-
-    pthread_mutex_t mutex;
-    pthread_cond_t cond;  
+    struct nTask *tasks;    // 任务链表头
+    struct nWorker *workers;   // 工作者链表头
+    pthread_mutex_t mutex;  // 互斥锁，保护任务链表和工作者链表的访问
+    pthread_cond_t cond;  // 条件变量，用于通知工作线程有新任务到来
 }ThreadPool;
 
-// 线程池的回调函数
+// 线程池的回调函数：回调函数不等于任务，他表示线程池的工作线程在等待任务时的行为
+// 查看有没有任务，如果有就执行任务，如果没有就等待
 static void *nThreadPoolCallback(void *arg){
+    // 创建线程时把worker指针塞进来，我们把它取出来
+    struct nWorker *worker = (struct nWorker *)arg;   // 获取工作线程的结构体
 
+    // 进入循环状态：只要你不主动退出，这个线程的 CPU 时间片就会一直执行这段代码。
+    while(1) {
+
+        pthread_mutex_lock(&worker->manager->mutex);   // 上锁，保护任务链表和工作者链表的访问
+
+        // 检查订单状态，
+        // 如果没有订单，线程就等待，然后把mutex锁释放，使得生产者能够向锁中添加任务
+        while (worker->manager->tasks == NULL) {   // 如果没有任务，就等待
+            pthread_cond_wait(&worker->manager->cond, &worker->manager->mutex);   // 等待条件变量，释放互斥锁
+        }
+
+        struct nTask *task = worker->manager->tasks;   // 获取任务链表的头节点
+        LIST_REMOVE(task, worker->manager->tasks);   // 从任务链表中删除任务节点
+        // 立刻解锁，实现高并发
+        pthread_mutex_unlock(&worker->manager->mutex);   // 解锁，允许其他线程访问任务链表和工作者链表
+        // 抢任务是多线程执行的，在执行任务时，不需要锁住任务
+        task->task_func(task->user_data);   // 执行任务函数
+
+        // **这就是线程池能高并发的根本原因：只在“抢资源”时排队，在“处理业务”时并行。
+    }
+    free(worker);   // 释放工作线程的结构体内存
 }
+
+// 提供接口，给别人使用（API）
 // 创建一个线程池
-int nThreadPoolCreate(ThreadPool *pool, int nWorker){
+// @func：完成了线程池的初始化
+    // 1️⃣ 初始化条件变量（用于线程间通信）
+    // 2️⃣ 初始化互斥锁（用于保护共享数据）
+    // 3️⃣ 创建 N 个工作线程（并加入链表管理）
+int nThreadPoolCreate(ThreadPool *pool, int numWorkers){
+    // 1. 参数检查
+    if (pool == NULL) return -1;
+    if (numWorkers < 1) numWorkers = 1;
+
+
+    // 2.1 初始化条件变量：让 pool->cond 准备好被使用
+    // 正常写法：pthread_cond_init(&pool->cond, NULL);
+    // 此处先把条件变量
+    pthread_cond_t blank_cond = PTHREAD_COND_INITIALIZER;   // 静态初始化器的值
+    // pool是在堆上动态分配的，
+    memcpy(&pool->cond, &blank_cond, sizeof(pthread_cond_t));   // 通过memcpy把静态初始化器的值拷贝到pool->cond中，实现动态初始化
+    // 2.2 初始化互斥锁
+    pthread_mutex_init(&pool->mutex, NULL);
+
+
+
+    // 创建numWorkers个工作线程
+    int i = 0;
+    for (i=0; i<numWorkers; i++){
+        struct nWorker *worker =(struct nWorker *) malloc(sizeof(struct nWorker));
+        if (worker == NULL) {
+            perror("malloc worker error");
+            return -2;
+        }
+        memset(worker, 0, sizeof(struct nWorker));
+        worker->manager = pool; // 每个线程都知道自己的线程池
+        // 创建线程，执行nThreadPoolCallback函数，传入worker作为参数
+        int ret = pthread_create(&worker->threadid, NULL, nThreadPoolCallback, worker);
+        if (ret) {
+            perror("pthread_create error");
+            free(worker);
+            return -3;
+        }
+        // 插入worker到线程池的workers链表中
+        LIST_INSERT(worker, pool->workers);
+    }
+    return 0;
 
 }
-// 销毁一个线程池
-int nThreadPoolDestory(ThreadPool *pool, int nWorker){
+// 销毁一个线程池（API）
+int nThreadPoolDestory(ThreadPool *pool, int numWorkers){
 
 }
-// 向线程池push一个任务
+// 向线程池push一个任务（API）
 int nThreadPoolPushTask(ThreadPool *pool, struct nTask *task){
 
 }
