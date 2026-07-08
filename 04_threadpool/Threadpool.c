@@ -32,6 +32,8 @@ struct nTask
     // 工作者节点： 代表一个工作线程
 struct nWorker {
     pthread_t threadid;     // 线程ID
+    int terminate;    // 线程是否终止的标志
+
     // 通过nWorker操作nManager，需要有nManager对象
     struct nManager *manager;   // 所属线程池
     struct nWorker *prev;   // 链表前驱
@@ -59,7 +61,12 @@ static void *nThreadPoolCallback(void *arg){
         // 检查订单状态，
         // 如果没有订单，线程就等待，然后把mutex锁释放，使得生产者能够向锁中添加任务
         while (worker->manager->tasks == NULL) {   // 如果没有任务，就等待
+            if (worker->terminate) break;
             pthread_cond_wait(&worker->manager->cond, &worker->manager->mutex);   // 等待条件变量，释放互斥锁
+        }
+        if (worker->terminate) {
+            pthread_mutex_unlock(&worker->manager->mutex);   // 解锁，允许其他线程访问任务链表和工作者链表,防止死锁现象
+            break;   // 如果线程被要求终止，就跳出循环，结束线程
         }
 
         struct nTask *task = worker->manager->tasks;   // 获取任务链表的头节点
@@ -123,10 +130,31 @@ int nThreadPoolCreate(ThreadPool *pool, int numWorkers){
 // 销毁一个线程池（API）
 int nThreadPoolDestory(ThreadPool *pool, int numWorkers){
 
+    // 
+    struct nWorker *worker = NULL;
+    for (worker = pool->workers;worker !- NULL;worker = worker->next){
+        worker->terminate = 1;   // 设置线程终止标志
+    }
+    pthread_mutex_lock(&pool->mutex);   // 上锁，保护任务链表和工作者链表的访问
+    pthread_cond_broadcast(&pool->cond);   // 通知所有线程，唤醒它们
+    pthread_mutex_unlock(&pool->mutex);   // 解锁，允许其他线程访问任务链表和工作者链表
+
+    pool->workers = NULL;   // 清空线程池的workers链表
+    pool->tasks = NULL;   // 清空线程池的tasks链表
+
+    return 0;
+
 }
 // 向线程池push一个任务（API）
 int nThreadPoolPushTask(ThreadPool *pool, struct nTask *task){
 
+    pthread_mutex_lock(&pool->mutex);
+    LIST_INSERT(task, pool->tasks); // 把task添加到pool
+    pthread_cond_signal(&pool->cond);// 通知一个线程，有新任务到来
+    pthread_mutex_unlock(&pool->mutex);
+
 }
 
+// pthread_cond_broadcast(&pool->cond); 唤醒所有等待这个条件变量的线程
+// pthread_cond_signal(&pool->cond); 唤醒一个等待这个条件变量的线程
 
