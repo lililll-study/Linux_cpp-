@@ -1,13 +1,22 @@
 #include <stdio.h>
+#include <pthread.h>
 
+/*
+    1. 链表操作宏
+    双向链表支持 O(1) 插入和删除
+    宏的方式避免函数调用开销
+    do-while(0) 保证宏像语句一样安全
+*/
+
+// @func：头插法 o(1)插入
 #define LIST_INSERT(item, list) do{ \
     item->previous = NULL; \
     item->next = list; \
     list = item; \
 }while(0)
-
-// 定义宏LIST_REMOVE，用于从链表中删除一个联系人
-// item表示要删除的联系人，list表示链表的头指针
+// @func：删除节点 o(1)删除
+        // 定义宏LIST_REMOVE，用于从链表中删除一个联系人
+        // item表示要删除的联系人，list表示链表的头指针
 #define LIST_REMOVE(item, list) do{ \
     if(item->previous) { item->previous->next = item->next; } \
     if(item->next) { item->next->previous = item->previous; } \
@@ -16,30 +25,33 @@
 }while(0)
 
 
-// 定义线程池
+/*
+    2. 数据结构部分定义
+        nTask描述要做什么
+        nWork描述要谁来做
+        nManager统一管理所有的工作者和任务
+    使用指针的意义是：所有线程都指向同一个内存地址的任务链表和工作者链表，实现数据共享。
+*/
 
-    // 定义任务节点：代表一个待执行的任务
-struct nTask
-{
-    // 每一个人到营业厅的任务不一样，定义执行的任务
-    void (*task_func)(void *arg);   // 要执行的函数指针
-    // 每一个任务都有相应的参数
-    void *user_data;                // 函数的参数
+// 定义线程池
+    // 1.1 任务节点
+struct nTask {
+    void (*task_func)(void *arg);   // 要执行的函数指针：每一个人到营业厅的任务不一样，定义执行的任务
+    void *user_data;                // 函数的参数：// 每一个任务都有相应的参数
     struct nTask *prev;              // 链表前驱
     struct nTask *next;             // 链表后继
 };
 
-    // 工作者节点： 代表一个工作线程
+    // 1.2 工作者节点
 struct nWorker {
     pthread_t threadid;     // 线程ID
-    int terminate;    // 线程是否终止的标志
-
+    int terminate;          // 线程是否终止的标志（新增！用于安全退出）
     // 通过nWorker操作nManager，需要有nManager对象
-    struct nManager *manager;   // 所属线程池
+    struct nManager *manager; // 所属线程池
     struct nWorker *prev;   // 链表前驱
     struct nWorker *next;   // 链表后继
 };
-    // 线程池管理器：统一管理所有任务和线程
+    // 1.3 线程池管理器
 typedef struct nManager {
     struct nTask *tasks;    // 任务链表头
     struct nWorker *workers;   // 工作者链表头
@@ -47,42 +59,54 @@ typedef struct nManager {
     pthread_cond_t cond;  // 条件变量，用于通知工作线程有新任务到来
 }ThreadPool;
 
-// 线程池的回调函数：回调函数不等于任务，他表示线程池的工作线程在等待任务时的行为
-// 查看有没有任务，如果有就执行任务，如果没有就等待
+
+
+/*
+    3. 核心的工作循环
+        // 同步机制：
+        // mutex (互斥锁，保护队列)，cond（唤醒线程）
+*/
+        // 线程池的回调函数：回调函数不等于任务，他表示线程池的工作线程在等待任务时的行为
+        // 查看有没有任务，如果有就执行任务，如果没有就等待
+// @func：消费者们(工作线程)，所有线程都在回调函数中循环等待
 static void *nThreadPoolCallback(void *arg){
     // 创建线程时把worker指针塞进来，我们把它取出来
     struct nWorker *worker = (struct nWorker *)arg;   // 获取工作线程的结构体
+    
+    while(1) {// 进入循环状态：只要你不主动退出，这个线程的 CPU 时间片就会一直执行这段代码。
+        // === 步骤1：加锁 ===
+        pthread_mutex_lock(&worker->manager->mutex);    // 上锁，保护任务链表和工作者链表的访问
 
-    // 进入循环状态：只要你不主动退出，这个线程的 CPU 时间片就会一直执行这段代码。
-    while(1) {
-
-        pthread_mutex_lock(&worker->manager->mutex);   // 上锁，保护任务链表和工作者链表的访问
-
-        // 检查订单状态，
-        // 如果没有订单，线程就等待，然后把mutex锁释放，使得生产者能够向锁中添加任务
-        while (worker->manager->tasks == NULL) {   // 如果没有任务，就等待
+        // === 步骤2：没任务就睡觉 ===
+        while (worker->manager->tasks == NULL) {        // 如果没有订单，线程就等待，然后把mutex锁释放，使得生产者能够向锁中添加任务
             if (worker->terminate) break;
             pthread_cond_wait(&worker->manager->cond, &worker->manager->mutex);   // 等待条件变量，释放互斥锁
         }
+
+        // === 步骤3：检查是否要退出 ===
         if (worker->terminate) {
-            pthread_mutex_unlock(&worker->manager->mutex);   // 解锁，允许其他线程访问任务链表和工作者链表,防止死锁现象
-            break;   // 如果线程被要求终止，就跳出循环，结束线程
+            pthread_mutex_unlock(&worker->manager->mutex);  // 解锁，允许其他线程访问任务链表和工作者链表,防止死锁现象
+            break;                                       // 如果线程被要求终止，就跳出循环，结束线程
         }
 
+        // === 步骤4：取出任务 ===
         struct nTask *task = worker->manager->tasks;   // 获取任务链表的头节点
         LIST_REMOVE(task, worker->manager->tasks);   // 从任务链表中删除任务节点
-        // 立刻解锁，实现高并发
-        pthread_mutex_unlock(&worker->manager->mutex);   // 解锁，允许其他线程访问任务链表和工作者链表
-        // 抢任务是多线程执行的，在执行任务时，不需要锁住任务
-        task->task_func(task->user_data);   // 执行任务函数
 
+        // === 步骤5：立即解锁（！实现高并发） ===
+        pthread_mutex_unlock(&worker->manager->mutex);   // 解锁，允许其他线程访问任务链表和工作者链表
+        
+        // === 步骤6：执行任务（无锁状态） ===
+        task->task_func(task);   // 抢任务是多线程执行的，在执行任务时，不需要锁住任务
+        // 任务执行完，回到循环头部
         // **这就是线程池能高并发的根本原因：只在“抢资源”时排队，在“处理业务”时并行。
     }
     free(worker);   // 释放工作线程的结构体内存
+    return NULL;
 }
 
-// 提供接口，给别人使用（API）
-// 创建一个线程池
+        // 提供接口，给别人使用（API）
+        // 创建一个线程池
 // @func：完成了线程池的初始化
     // 1️⃣ 初始化条件变量（用于线程间通信）
     // 2️⃣ 初始化互斥锁（用于保护共享数据）
@@ -145,7 +169,10 @@ int nThreadPoolDestory(ThreadPool *pool, int numWorkers){
     return 0;
 
 }
+
+
 // 向线程池push一个任务（API）
+// @func：生产者(主线程/其他线程) -> 往队列里加任务
 int nThreadPoolPushTask(ThreadPool *pool, struct nTask *task){
 
     pthread_mutex_lock(&pool->mutex);
@@ -157,4 +184,48 @@ int nThreadPoolPushTask(ThreadPool *pool, struct nTask *task){
 
 // pthread_cond_broadcast(&pool->cond); 唤醒所有等待这个条件变量的线程
 // pthread_cond_signal(&pool->cond); 唤醒一个等待这个条件变量的线程
+
+// sdk --> debug thread pool
+
+#if 1
+
+#define THREADPOOL_INIT_COUNT 20
+#define TASK_INIT_SIZE 1000
+
+void task_entry(void *arg){
+
+    struct nTask *task = (struct nTask*)task;
+
+    int *idx = (int *)task->user_data;
+
+    printf("idx: %d\n", *idx);
+
+    free(task->user_data);
+    free(task);
+}
+
+int main(void){
+    ThreadPool pool;
+
+    nThreadPoolCreate(&pool, THREADPOOL_INIT_COUNT);
+
+    int i = 0;
+    for (i=0; i<TASK_INIT_SIZE; i++){
+        struct nTask *task = (struct nTask *) malloc(sizeof(struct nTask));
+        if (task == NULL){
+            perror("malloc");
+            exit(1);
+        }
+        memset(task, 0, sizeof(struct nTask));
+
+        task-> task_func = task_entry;
+        task -> user_data = malloc(sizeof(int));
+        *(int*)task->user_data = i;
+
+        nThreadPoolPushTask(&pool, task);
+    }
+
+}
+
+#else
 

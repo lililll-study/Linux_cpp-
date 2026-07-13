@@ -15,7 +15,7 @@ int inc(int *value, int add){
         : "=a" (old)
         : "m" (*value), "a" (add)
         : "cc", "memory"
-    )
+    );
     return old;
 }
 
