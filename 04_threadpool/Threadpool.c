@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <pthread.h>
 
 /*
@@ -38,7 +40,7 @@
 struct nTask {
     void (*task_func)(void *arg);   // 要执行的函数指针：每一个人到营业厅的任务不一样，定义执行的任务
     void *user_data;                // 函数的参数：// 每一个任务都有相应的参数
-    struct nTask *prev;              // 链表前驱
+    struct nTask *previous;              // 链表前驱
     struct nTask *next;             // 链表后继
 };
 
@@ -48,7 +50,7 @@ struct nWorker {
     int terminate;          // 线程是否终止的标志（新增！用于安全退出）
     // 通过nWorker操作nManager，需要有nManager对象
     struct nManager *manager; // 所属线程池
-    struct nWorker *prev;   // 链表前驱
+    struct nWorker *previous;   // 链表前驱
     struct nWorker *next;   // 链表后继
 };
     // 1.3 线程池管理器
@@ -73,6 +75,7 @@ static void *nThreadPoolCallback(void *arg){
     // 创建线程时把worker指针塞进来，我们把它取出来
     struct nWorker *worker = (struct nWorker *)arg;   // 获取工作线程的结构体
     
+    printf("nThreadPoolCallback\n");   // 打印线程ID，方便调试
     while(1) {// 进入循环状态：只要你不主动退出，这个线程的 CPU 时间片就会一直执行这段代码。
         // === 步骤1：加锁 ===
         pthread_mutex_lock(&worker->manager->mutex);    // 上锁，保护任务链表和工作者链表的访问
@@ -105,39 +108,47 @@ static void *nThreadPoolCallback(void *arg){
     return NULL;
 }
 
-        // 提供接口，给别人使用（API）
-        // 创建一个线程池
-// @func：完成了线程池的初始化
-    // 1️⃣ 初始化条件变量（用于线程间通信）
-    // 2️⃣ 初始化互斥锁（用于保护共享数据）
-    // 3️⃣ 创建 N 个工作线程（并加入链表管理）
+/*
+    4. 线程池的核心API层
+        // 所有API 通过mutex 和 cond 保证线程安全
+*/
+    // 4.1 创建线程池
+    // @func：完成了线程池的初始化
+        // 初始化条件变量（用于线程间通信）
+        // 初始化互斥锁（用于保护共享数据）
+        // 创建 N 个工作线程（并加入链表管理）
 int nThreadPoolCreate(ThreadPool *pool, int numWorkers){
-    // 1. 参数检查
+    // 1. 参数检查（防止空指针崩溃）
     if (pool == NULL) return -1;
     if (numWorkers < 1) numWorkers = 1;
+    memset(pool, 0, sizeof(ThreadPool));   // 清空线程池结构体，初始化为0
 
-
-    // 2.1 初始化条件变量：让 pool->cond 准备好被使用
+    // 2. 初始化条件变量：让 pool->cond 准备好被使用
     // 正常写法：pthread_cond_init(&pool->cond, NULL);
     // 此处先把条件变量
     pthread_cond_t blank_cond = PTHREAD_COND_INITIALIZER;   // 静态初始化器的值
-    // pool是在堆上动态分配的，
-    memcpy(&pool->cond, &blank_cond, sizeof(pthread_cond_t));   // 通过memcpy把静态初始化器的值拷贝到pool->cond中，实现动态初始化
-    // 2.2 初始化互斥锁
+    memcpy(&pool->cond, &blank_cond, sizeof(pthread_cond_t));   // pool是在堆上动态分配的，通过memcpy把blank_cond拷贝到pool->cond
+    // 3. 初始化互斥锁
     pthread_mutex_init(&pool->mutex, NULL);
 
 
 
-    // 创建numWorkers个工作线程
+    // 4. 创建numWorkers个工作线程
     int i = 0;
     for (i=0; i<numWorkers; i++){
+        // 4.1 分配员工的工牌
         struct nWorker *worker =(struct nWorker *) malloc(sizeof(struct nWorker));
         if (worker == NULL) {
             perror("malloc worker error");
             return -2;
         }
+        // 4.2 工牌清零
         memset(worker, 0, sizeof(struct nWorker));
+
+        // 4.3 告诉员工谁是他的老板
         worker->manager = pool; // 每个线程都知道自己的线程池
+
+        // 4.4 招聘员工（创建线程）
         // 创建线程，执行nThreadPoolCallback函数，传入worker作为参数
         int ret = pthread_create(&worker->threadid, NULL, nThreadPoolCallback, worker);
         if (ret) {
@@ -145,24 +156,30 @@ int nThreadPoolCreate(ThreadPool *pool, int numWorkers){
             free(worker);
             return -3;
         }
-        // 插入worker到线程池的workers链表中
-        LIST_INSERT(worker, pool->workers);
+        // 4.5 把员工登记在册
+        LIST_INSERT(worker, pool->workers);// 插入worker到线程池的workers链表中
     }
     return 0;
 
 }
-// 销毁一个线程池（API）
-int nThreadPoolDestory(ThreadPool *pool, int numWorkers){
 
-    // 
+
+    // 4.2 销毁线程池
+    // @func：
+int nThreadPoolDestory(ThreadPool *pool){
+
+    // 1. 设置所有线程的终止标志
     struct nWorker *worker = NULL;
-    for (worker = pool->workers;worker !- NULL;worker = worker->next){
+    for (worker = pool->workers;worker != NULL;worker = worker->next){
         worker->terminate = 1;   // 设置线程终止标志
     }
+
+    // 2. 唤醒所有线程，让它们检查终止标志
     pthread_mutex_lock(&pool->mutex);   // 上锁，保护任务链表和工作者链表的访问
     pthread_cond_broadcast(&pool->cond);   // 通知所有线程，唤醒它们
     pthread_mutex_unlock(&pool->mutex);   // 解锁，允许其他线程访问任务链表和工作者链表
 
+    // 3. 清空登记表，每个被唤醒的线程，都会在while中检查terminate标志，然后break跳出，接着free释放
     pool->workers = NULL;   // 清空线程池的workers链表
     pool->tasks = NULL;   // 清空线程池的tasks链表
 
@@ -170,9 +187,9 @@ int nThreadPoolDestory(ThreadPool *pool, int numWorkers){
 
 }
 
-
-// 向线程池push一个任务（API）
-// @func：生产者(主线程/其他线程) -> 往队列里加任务
+    // 4.3 向线程池推送任务
+    // @func：加锁，把任务添加到线程池的任务队列，然后唤醒线程，再解锁
+    // 线程被唤醒后取出任务并执行
 int nThreadPoolPushTask(ThreadPool *pool, struct nTask *task){
 
     pthread_mutex_lock(&pool->mutex);
@@ -188,13 +205,14 @@ int nThreadPoolPushTask(ThreadPool *pool, struct nTask *task){
 // sdk --> debug thread pool
 
 #if 1
-
+// 初始化线程池的线程的数量
 #define THREADPOOL_INIT_COUNT 20
+// 定义总任务数量
 #define TASK_INIT_SIZE 1000
 
 void task_entry(void *arg){
 
-    struct nTask *task = (struct nTask*)task;
+    struct nTask *task = (struct nTask*)arg;
 
     int *idx = (int *)task->user_data;
 
@@ -210,22 +228,27 @@ int main(void){
     nThreadPoolCreate(&pool, THREADPOOL_INIT_COUNT);
 
     int i = 0;
-    for (i=0; i<TASK_INIT_SIZE; i++){
+    for (i=0; i<TASK_INIT_SIZE; i++){   //创建1000个任务
         struct nTask *task = (struct nTask *) malloc(sizeof(struct nTask));
-        if (task == NULL){
+        if (task == NULL){          // 分配内存失败，打印错误信息并退出
             perror("malloc");
             exit(1);
         }
-        memset(task, 0, sizeof(struct nTask));
+        memset(task, 0, sizeof(struct nTask));// 把task结构体清零，防止野指针
 
-        task-> task_func = task_entry;
-        task -> user_data = malloc(sizeof(int));
-        *(int*)task->user_data = i;
+        task-> task_func = task_entry;      // ③ 设置任务函数
+        task -> user_data = malloc(sizeof(int));// ④ 分配参数内存
+        *(int*)task->user_data = i;         // ⑤ 设置参数值（0~999）
 
-        nThreadPoolPushTask(&pool, task);
+        nThreadPoolPushTask(&pool, task);   // ⑥ 提交任务
     }
-
+    // 等待一会儿，让任务执行完成
+    sleep(2);
+    // 销毁线程池
+    nThreadPoolDestory(&pool);
+    
+    return 0;
 }
 
-#else
+#endif
 
