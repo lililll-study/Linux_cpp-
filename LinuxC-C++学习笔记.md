@@ -24,19 +24,23 @@ chmod +x ping.sh    # 给.sh文件可执行权限，有该权限则执行上
 
 ### 1 shell 简介
 
-为什么要用shell编程呢？这里的shell编程通常指shell脚本或Bash，相当于把Linux中执行的命令写成一条流水线，把所有命令自动化执行。
+**为什么要用shell编程呢？** 这里的shell编程通常指shell脚本或Bash，相当于**把Linux中执行的命令写成一条流水线**，**把所有命令自动化执行。** 只要把之前的gcc命令写进.sh文件，加上if判断，就能变成自动化脚本了。
 
-只要把之前的gcc命令写进.sh文件，加上if判断，就能变成自动化脚本了。
+**执行shell脚本的cmd**：“./ping.sh” 或者 如果没有头文件则“/bin/bash ./ping.sh”
 
-### 2 shell 编程结构
+### 2 shell 语法
+
+3个示例都用到了for，因此重点关注for用法，示例代码如下：
+
+#### ping测试多个地址
 
 ```shell
 # 实现功能：测试连接所有虚拟机
 #|/bin/bash
 头文件
 for i in [1...254]; do
-    ping -c 2 -i 0.5 192.168.199.$i
-    if [ $? -eq 0]; then
+    ping -c 2 -i 0.5 192.168.199.$i &>/dev/null
+    if [ $? -eq 0 ]; then
         echo "192.168.199.$i is up"
     else 
         echo "192.168.199.$i is down"
@@ -49,9 +53,44 @@ done
     ping -c 2 -i 0.5 192.168.199.$>/dev/null
 ```
 
-执行shell脚本的cmd：
+#### 读取目录文件名称
 
-“./ping.sh” 或者 如果没有头文件则“/bin/bash ./ping.sh”
+```shell
+lhy = "www.nuaa.com"
+echo $lhy
+
+for file in $(ls /home/lhy/share/); do
+    echo "${file}"
+done
+```
+
+用法：
+
+for x in items; do
+
+    xxx
+
+done
+
+
+
+### 3 特殊符号
+
+| ：管道，将左边命令输出作为右边命令的输入
+
+awk： 文本处理工具，工作模式：读入每一行，按照空白符拆成多个字段，对字段进行处理
+
+awk '{print $1}'： 单引号内容告诉awk要执行什么。1表示当前行第1个字段。
+
+* `print $1` 的意思是：**打印当前行的第 1 列**。
+
+$：命令替换。让sheel先执行括号里的，然后把执行结果替换到当前位置。
+
+```shell
+local_ip=$(hostname -I | awk '{print $1}')
+```
+
+
 
 # 编程技术点解析
 
@@ -323,5 +362,3 @@ pthread_cond_signal(&pool->cond);
 2：这里的锁，能不能改为其他锁？有什么区别？能不能用CAS？这里能不能更改线程池的数量？
 
 3：如何查看线程池中的20个线程都被调用了？
-
-
