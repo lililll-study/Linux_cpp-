@@ -362,3 +362,47 @@ pthread_cond_signal(&pool->cond);
 2：这里的锁，能不能改为其他锁？有什么区别？能不能用CAS？这里能不能更改线程池的数量？
 
 3：如何查看线程池中的20个线程都被调用了？
+
+
+
+## 四 数据库
+
+### MySQL数据库操作
+
+```
+grant all privileges on *.* to 'admin'@'%';
+grant select on mysql.* to 'admin'@'%';
+
+
+create user 'admin'@'%' identified by '123321';
+show databases;
+use mysql;
+show tables;
+mysql -u root -p
+
+
+
+```
+
+数据库服务器限制root的远程登陆
+
+admin没有权限操作数据库
+
+数据库建模：把所有数据，通过数据库的语言，用数据库的格式，放进数据库。通过表存储起来，然后再用程序往表中插入数据。
+
+
+
+
+
+```
+客户端    login       node server      select         db server
+微信  →  网络连接   →  业务逻辑实现  →   网络连接    →   数据库服务器
+qq等                                                 ⬇
+                                                   数据库
+```
+
+
+
+安装MySQL工具
+
+sudo apt-get install libmysqlclient-dev
